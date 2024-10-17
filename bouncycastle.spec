@@ -8,7 +8,7 @@ Name:             bouncycastle
 Version:          %{ver}
 Release:          5%{?dist}
 License:          MIT
-URL:              http://www.bouncycastle.org
+URL:              https://www.bouncycastle.org
 # Use original sources from here on out.
 Source0:          http://www.bouncycastle.org/download/bcprov-%{archivever}.tar.gz
 Source1:          http://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/%{ver}/bcprov-jdk15on-%{ver}.pom

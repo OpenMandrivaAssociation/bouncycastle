@@ -1,304 +1,195 @@
-%{?_javapackages_macros:%_javapackages_macros}
-%global ver 1.50
-%global archivever jdk15on-%(echo %{ver}|sed 's|\\\.||')
-%global classname org.bouncycastle.jce.provider.BouncyCastleProvider
+Name:		bouncycastle
+Version:	1.86
+Release:	1
+Summary:	Cryptography APIs for Java
+Group:		Development/Java
+License:	MIT
+URL:		https://www.bouncycastle.org/
+# Tag r1rv86. Vendored jars under libs/, test/libs/, config/checkstyle/lib/
+# and gradle/wrapper/ are removed from the lookaside archive. module-info.java
+# is not compiled: a versioned module descriptor makes jmod.deps emit
+# jmod(releases:). Core classes are compiled into the provider jar, which is
+# how the upstream jdk18on artifacts are built.
+Source0:	https://github.com/bcgit/bc-java/archive/refs/tags/r1rv86.tar.gz#/bouncycastle-%{version}.tar.gz
 
-Summary:          Bouncy Castle Crypto Package for Java
-Name:             bouncycastle
-Version:          %{ver}
-Release:          5%{?dist}
-License:          MIT
-URL:              https://www.bouncycastle.org
-# Use original sources from here on out.
-Source0:          http://www.bouncycastle.org/download/bcprov-%{archivever}.tar.gz
-Source1:          http://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk15on/%{ver}/bcprov-jdk15on-%{ver}.pom
-BuildRequires:    javapackages-tools
-Requires:         javapackages-tools
-Requires(post):   javapackages-tools
-Requires(postun): javapackages-tools
-BuildArch:        noarch
-BuildRequires:    java-devel
-Requires:         java-headless
-BuildRequires:    junit
-
-Provides:         bcprov = %{version}-%{release}
+BuildArch:	noarch
+BuildRequires:	java-current-devel
+BuildRequires:	sysjar
 
 %description
-The Bouncy Castle Crypto package is a Java implementation of cryptographic
-algorithms. The package is organized so that it contains a light-weight API
-suitable for use in any environment (including the newly released J2ME) with
-the additional infrastructure to conform the algorithms to the JCE framework.
-
-%package javadoc
-Summary:        Javadoc for %{name}
-
-%description javadoc
-API documentation for the %{name} package.
+Bouncy Castle 1.86 is the cryptography library Gradle 9.9.1 pins for
+bcprov-jdk18on and bcpg-jdk18on. This package also builds bcutil-jdk18on
+and bcpkix-jdk18on with javac. The provider jar carries the Java 11, 15,
+17 and 25 overlays under META-INF/versions. The Java 17 overlay is
+compiled with -source 17 -target 17 so it can implement javax.crypto.KEMSpi
+from the build JDK while staying in the versions/17 tree.
 
 %prep
-%setup -q -n bcprov-%{archivever}
-
-# Remove provided binaries
-find . -type f -name "*.class" -exec rm -f {} \;
-find . -type f -name "*.jar" -exec rm -f {} \;
-
-mkdir src
-unzip -qq src.zip -d src/
+%autosetup -n bouncycastle-%{version}
+find . -name '*.jar' -delete
+find . -name '*.class' -delete
 
 %build
-pushd src
-  export CLASSPATH=$(build-classpath junit)
-  %javac -g -source 1.5 -target 1.5 -encoding UTF-8 $(find . -type f -name "*.java")
-  jarfile="../bcprov.jar"
-  # Exclude all */test/* files except org.bouncycastle.util.test, cf. upstream
-  files="$(find . -type f \( -name '*.class' -o -name '*.properties' \) -not -path '*/test/*')"
-  files="$files $(find . -type f -path '*/org/bouncycastle/util/test/*.class')"
-  files="$files $(find . -type f -path '*/org/bouncycastle/jce/provider/test/*.class')"
-  files="$files $(find . -type f -path '*/org/bouncycastle/ocsp/test/*.class')"
-  test ! -d classes && mf="" \
-    || mf="`find classes/ -type f -name "*.mf" 2>/dev/null`"
-  test -n "$mf" && jar cvfm $jarfile $mf $files \
-    || %jar cvf $jarfile $files
-popd
+set -eo pipefail
+export JAVA_HOME=%{_jvmdir}/java-openjdk
+export PATH=$JAVA_HOME/bin:$PATH
+
+compile_tree() {
+	rel="$1"
+	dest="$2"
+	cp="$3"
+	shift 3
+	mkdir -p "$dest"
+	find "$@" -name '*.java' ! -name module-info.java > "$dest.sources"
+	if [ ! -s "$dest.sources" ]; then
+		echo "no sources for $dest" >&2
+		exit 1
+	fi
+	if [ -n "$cp" ]; then
+		javac --release "$rel" -encoding UTF-8 -Xlint:none \
+			-cp "$cp" -d "$dest" @"$dest.sources"
+	else
+		javac --release "$rel" -encoding UTF-8 -Xlint:none \
+			-d "$dest" @"$dest.sources"
+	fi
+}
+
+compile_tree 8 classes/prov "" core/src/main/java prov/src/main/java
+compile_tree 8 classes/util classes/prov util/src/main/java
+compile_tree 8 classes/pg "classes/prov:classes/util" pg/src/main/java
+compile_tree 8 classes/pkix "classes/prov:classes/util" pkix/src/main/java
+compile_tree 11 classes/prov11 classes/prov prov/src/main/jdk1.11
+compile_tree 15 classes/prov15 "classes/prov:classes/prov11" prov/src/main/jdk1.15
+
+mkdir -p classes/prov17
+find prov/src/main/jdk17 -name '*.java' ! -name module-info.java > classes/prov17.sources
+# Not --release 17: KEMSpi arrived in Java 21 and this overlay implements it.
+javac -source 17 -target 17 -encoding UTF-8 -Xlint:none \
+	-cp "classes/prov:classes/prov11:classes/prov15" \
+	-d classes/prov17 @classes/prov17.sources
+
+compile_tree 25 classes/prov25 "classes/prov:classes/prov11:classes/prov15:classes/prov17" prov/src/main/jdk25
+
+/bin/cp -a prov/src/main/resources/. classes/prov/
+/bin/cp -a pkix/src/main/resources/. classes/pkix/
+mkdir -p classes/prov/META-INF/versions/11
+mkdir -p classes/prov/META-INF/versions/15
+mkdir -p classes/prov/META-INF/versions/17
+mkdir -p classes/prov/META-INF/versions/25
+/bin/cp -a classes/prov11/. classes/prov/META-INF/versions/11/
+/bin/cp -a classes/prov15/. classes/prov/META-INF/versions/15/
+/bin/cp -a classes/prov17/. classes/prov/META-INF/versions/17/
+/bin/cp -a classes/prov25/. classes/prov/META-INF/versions/25/
+
+printf 'Manifest-Version: 1.0\nMulti-Release: true\n' > manifest-mr.txt
+printf 'Manifest-Version: 1.0\n' > manifest.txt
+jar cfm bcprov-jdk18on.jar manifest-mr.txt -C classes/prov .
+jar cfm bcutil-jdk18on.jar manifest.txt -C classes/util .
+jar cfm bcpg-jdk18on.jar manifest.txt -C classes/pg .
+jar cfm bcpkix-jdk18on.jar manifest.txt -C classes/pkix .
+
+write_pom() {
+	art="$1"
+	desc="$2"
+	deps="$3"
+	cat > "$art.pom" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.bouncycastle</groupId>
+  <artifactId>$art</artifactId>
+  <version>%{version}</version>
+  <name>$art</name>
+  <description>$desc</description>
+  <url>https://www.bouncycastle.org/</url>
+  <licenses>
+    <license>
+      <name>MIT</name>
+      <url>https://www.bouncycastle.org/licence.html</url>
+    </license>
+  </licenses>
+  <dependencies>
+$deps
+  </dependencies>
+</project>
+EOF
+}
+
+dep_xml() {
+	printf '    <dependency>\n      <groupId>org.bouncycastle</groupId>\n      <artifactId>%%s</artifactId>\n      <version>%%s</version>\n    </dependency>\n' "$1" "%{version}"
+}
+
+util_deps="$(dep_xml bcprov-jdk18on)"
+pg_deps="$(dep_xml bcprov-jdk18on)
+$(dep_xml bcutil-jdk18on)"
+pkix_deps="$pg_deps"
+write_pom bcprov-jdk18on "Bouncy Castle provider" ""
+write_pom bcutil-jdk18on "Bouncy Castle ASN.1 utilities" "$util_deps"
+write_pom bcpg-jdk18on "Bouncy Castle OpenPGP API" "$pg_deps"
+write_pom bcpkix-jdk18on "Bouncy Castle PKIX and CMS API" "$pkix_deps"
 
 %install
-install -dm 755 $RPM_BUILD_ROOT%{_sysconfdir}/java/security/security.d
-touch $RPM_BUILD_ROOT%{_sysconfdir}/java/security/security.d/2000-%{classname}
-
-# install bouncy castle provider
-install -dm 755 $RPM_BUILD_ROOT%{_javadir}
-install -pm 644 bcprov.jar \
-  $RPM_BUILD_ROOT%{_javadir}/
-
-install -dm 755 $RPM_BUILD_ROOT%{_javadir}/gcj-endorsed
-pushd $RPM_BUILD_ROOT%{_javadir}/gcj-endorsed
-  ln -sf ../bcprov.jar bcprov.jar
-popd
-
-# javadoc
-mkdir -p $RPM_BUILD_ROOT%{_javadocdir}/%{name}
-cp -pr docs/* $RPM_BUILD_ROOT%{_javadocdir}/%{name}
-
-# maven pom
-install -dm 755 $RPM_BUILD_ROOT%{_mavenpomdir}
-install -pm 644 %{SOURCE1} $RPM_BUILD_ROOT%{_mavenpomdir}/JPP-bcprov.pom
-%add_maven_depmap -a "bouncycastle:bcprov-jdk15,org.bouncycastle:bcprov-jdk16,org.bouncycastle:bcprov-jdk15" JPP-bcprov.pom bcprov.jar
+set -eo pipefail
+export JAVA_HOME=%{_jvmdir}/java-openjdk
+export PATH=$JAVA_HOME/bin:$PATH
+install_one() {
+	sysjar install --buildroot %{buildroot} \
+		--artifact "$1":"$2" \
+		--file-name "$3" \
+		--filelist "$4"
+}
+install_one bcprov-jdk18on.pom bcprov-jdk18on.jar bcprov-jdk18on .mfiles.prov
+install_one bcutil-jdk18on.pom bcutil-jdk18on.jar bcutil-jdk18on .mfiles.util
+install_one bcpg-jdk18on.pom bcpg-jdk18on.jar bcpg-jdk18on .mfiles.pg
+install_one bcpkix-jdk18on.pom bcpkix-jdk18on.jar bcpkix-jdk18on .mfiles.pkix
+awk '!seen[$0]++' .mfiles.prov .mfiles.util .mfiles.pg .mfiles.pkix > .mfiles
 
 %check
-pushd src
-  export CLASSPATH=$PWD:$(build-classpath junit)
-  for test in $(find . -name AllTests.class) ; do
-    test=${test#./} ; test=${test%.class} ; test=${test//\//.}
-    # TODO: failures; get them fixed and remove || :
-    %java org.junit.runner.JUnitCore $test || :
-  done
-popd
+set -eo pipefail
+export JAVA_HOME=%{_jvmdir}/java-openjdk
+export PATH=$JAVA_HOME/bin:$PATH
+PROV=%{buildroot}%{_javadir}/bcprov-jdk18on.jar
+UTIL=%{buildroot}%{_javadir}/bcutil-jdk18on.jar
+PG=%{buildroot}%{_javadir}/bcpg-jdk18on.jar
+PKIX=%{buildroot}%{_javadir}/bcpkix-jdk18on.jar
+test -f "$PROV"
+test -f "$UTIL"
+test -f "$PG"
+test -f "$PKIX"
+unzip -p "$PROV" META-INF/MANIFEST.MF | grep -F 'Multi-Release: true'
+jar tf "$PROV" | grep -F 'META-INF/versions/17/org/bouncycastle/pqc/jcajce/provider/ntru/NTRUKEMSpi.class'
+jar tf "$PROV" | grep -F 'META-INF/versions/25/org/bouncycastle/jcajce/provider/kdf/hkdf/HKDFSpi.class'
+for jarfile in "$PROV" "$UTIL" "$PG" "$PKIX"; do
+	if jar tf "$jarfile" | grep -q module-info; then
+		echo "module-info leaked into $jarfile" >&2
+		exit 1
+	fi
+done
+mkdir -p check
+cat > check/Smoke.java <<'END'
+import java.security.Security;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.openpgp.operator.bc.BcKeyFingerprintCalculator;
 
-
-%post
-{
-  # Rebuild the list of security providers in classpath.security
-  suffix=security/classpath.security
-  secfiles="/usr/lib/$suffix /usr/lib64/$suffix"
-
-  for secfile in $secfiles
-  do
-    # check if this classpath.security file exists
-    [ -f "$secfile" ] || continue
-
-    sed -i '/^security\.provider\./d' "$secfile"
-
-    count=0
-    for provider in $(ls /etc/java/security/security.d)
-    do
-      count=$((count + 1))
-      echo "security.provider.${count}=${provider#*-}" >> "$secfile"
-    done
-  done
-} || :
-
-%postun
-if [ $1 -eq 0 ] ; then
-
-  {
-    # Rebuild the list of security providers in classpath.security
-    suffix=security/classpath.security
-    secfiles="/usr/lib/$suffix /usr/lib64/$suffix"
-
-    for secfile in $secfiles
-    do
-      # check if this classpath.security file exists
-      [ -f "$secfile" ] || continue
-
-      sed -i '/^security\.provider\./d' "$secfile"
-
-      count=0
-      for provider in $(ls /etc/java/security/security.d)
-      do
-        count=$((count + 1))
-        echo "security.provider.${count}=${provider#*-}" >> "$secfile"
-      done
-    done
-  } || :
-
-fi
+public class Smoke {
+	public static void main(String[] args) throws Exception {
+		Security.addProvider(new BouncyCastleProvider());
+		if (Security.getProvider("BC") == null) {
+			throw new AssertionError("no BC");
+		}
+		new BcKeyFingerprintCalculator();
+		Class.forName("org.bouncycastle.bcpg.ArmoredOutputStream");
+		Class.forName("org.bouncycastle.cert.X509CertificateHolder");
+		System.out.println("bc_ok " + Security.getProvider("BC").getName());
+	}
+}
+END
+javac --release 8 -encoding UTF-8 -Xlint:-options \
+	-cp "$PROV:$UTIL:$PG:$PKIX" -d check check/Smoke.java
+java -cp "check:$PROV:$UTIL:$PG:$PKIX" Smoke > check/out.txt
+cat check/out.txt
+grep -F -q 'bc_ok BC' check/out.txt
 
 %files -f .mfiles
-%doc *.html
-%{_javadir}/gcj-endorsed/bcprov.jar
-%{_sysconfdir}/java/security/security.d/2000-%{classname}
-
-%files javadoc
-%{_javadocdir}/%{name}/
-
-%changelog
-* Wed Oct 22 2014 Mikolaj Izdebski <mizdebsk@redhat.com> - 1.50-5
-- Add alias for org.bouncycastle:bcprov-jdk15
-
-* Mon Jun 09 2014 Michal Srb <msrb@redhat.com> - 1.50-4
-- Migrate to .mfiles
-
-* Sat Jun 07 2014 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.50-3
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_21_Mass_Rebuild
-
-* Wed Feb 26 2014 Michal Srb <msrb@redhat.com> - 1.50-2
-- Fix java BR/R
-- Build with -source/target 1.5
-- s/organised/organized/
-
-* Fri Feb 21 2014 Michal Srb <msrb@redhat.com> - 1.50-1
-- Update to upstream version 1.50
-- Switch to java-headless
-
-* Mon Jan  6 2014 Mikolaj Izdebski <mizdebsk@redhat.com> - 1.46-12
-- Add Maven alias for bouncycastle:bcprov-jdk15
-
-* Tue Oct 22 2013 gil cattaneo <puntogil@libero.it> 1.46-11
-- remove versioned Jars
-
-* Thu Aug 29 2013 gil cattaneo <puntogil@libero.it> 1.46-10
-- remove update_maven_depmap
-
-* Mon Aug 05 2013 gil cattaneo <puntogil@libero.it> 1.46-9
-- rebuilt rhbz#992026
-
-* Sat Aug 03 2013 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.46-8
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_20_Mass_Rebuild
-
-* Wed Feb 13 2013 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.46-7
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_19_Mass_Rebuild
-
-* Wed Jul 18 2012 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.46-6
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_18_Mass_Rebuild
-
-* Tue May 08 2012 Tom Callaway <spot@fedoraproject.org> - 1.46-5
-- use original sources from here on out
-
-* Sat Feb 18 2012 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.46-4
-- Build with -source 1.6 -target 1.6 
-
-* Thu Jan 12 2012 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.46-3
-- Update javac target version to 1.7 to build with new java
-
-* Thu Jan 12 2012 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.46-2
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_17_Mass_Rebuild
-
-* Tue Mar 01 2011 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.46-1
-- Import Bouncy Castle 1.46.
-
-* Mon Feb 07 2011 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.45-3
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_15_Mass_Rebuild
-
-* Thu Dec 30 2010 Alexander Kurtakov <akurtako@redhat.com> 1.45-2
-- Drop gcj.
-- Adapt to current guidelines.
-
-* Thu Feb 11 2010 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.45-1
-- Import Bouncy Castle 1.45.
-
-* Sat Nov 14 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.44-1
-- Import Bouncy Castle 1.44.
-
-* Sun Sep  6 2009 Ville Skyttä <ville.skytta@iki.fi> - 1.43-6
-- Include improvements from #521475:
-- Include missing properties files in jar.
-- Build with javac -encoding UTF-8.
-- Use %%javac and %%jar macros.
-- Run test suite during build (ignoring failures for now).
-- Follow upstream in excluding various test suite classes from jar; drop
-  dependency on junit4.
-
-* Wed Aug 26 2009 Andrew Overholt <overholt@redhat.com> 1.43-5
-- Add maven POM
-
-* Fri Jul 24 2009 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.43-4
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_12_Mass_Rebuild
-
-* Sat Jul 11 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.43-3
-- Raise java requirement to >= 1.7 once again.
-
-* Fri Jul 10 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.43-2
-- Re-enable AOT bits thanks to Andrew Haley.
-
-* Mon Apr 20 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.43-1
-- Import Bouncy Castle 1.43.
-
-* Sat Apr 18 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.42-3
-- Don't build AOT bits. The package needs java1.6
-
-* Thu Apr 09 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.42-2
-- Add missing Requires: junit4
-
-* Tue Mar 17 2009 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.42-1
-- Import Bouncy Castle 1.42.
-- Update description.
-- Add javadoc subpackage.
-
-* Mon Feb 23 2009 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 1.41-3
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_11_Mass_Rebuild
-
-* Wed Nov 11 2008 Orcan Ogetbil <oget [DOT] fedora [AT] gmail [DOT] com> - 1.41-2
-- Fixed license tag (BSD -> MIT).
-- Minor improvements in the SPEC file for better compatibility with the 
-  Fedora Java Packaging Guidelines.
-- Added "Provides: bcprov == %%{version}-%%{release}".
-
-* Thu Oct  2 2008 Lillian Angel <langel@redhat.com> - 1.41-1
-- Import Bouncy Castle 1.41.
-- Resolves: rhbz#465203
-
-* Thu May 15 2008 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.39-1
-- Import Bouncy Castle 1.39.
-- Set target to 1.5.
-
-* Mon Feb 18 2008 Fedora Release Engineering <rel-eng@fedoraproject.org> - 1.38-2
-- Autorebuild for GCC 4.3
-
-* Thu Nov 29 2007 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.38-1
-- Import Bouncy Castle 1.38.
-- Require junit4 for build.
-- Require java-1.7.0-icedtea-devel for build.
-- Wrap lines at 80 columns.
-- Inline rebuild-security-providers in post and postun sections.
-- Related: rhbz#260161
-
-* Sat Mar 31 2007 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.34-3
-- Require java-1.5.0-gcj.
-
-* Tue Dec 12 2006 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.34-2
-- Install bcprov jar and unversioned symlink in %%{_javadir}.
-- Install bcprov symlink in %%{_javadir}/gcj-endorsed.
-- Change release numbering format to X.fc7.
-- Include new bcprov files in files list.
-- Import Bouncy Castle 1.34.
-- Related: rhbz#218794
-
-* Tue Jul 25 2006 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.33-3
-- Bump release number.
-
-* Mon Jul 10 2006 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.33-2
-- Fix problems pointed out by reviewer.
-
-* Fri Jul  7 2006 Thomas Fitzsimmons <fitzsim@redhat.com> - 1.33-1
-- First release.
-
+%license LICENSE.md LICENSE.html
+%doc README.md SECURITY.md

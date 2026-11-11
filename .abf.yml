@@ -1,3 +1,5 @@
 sources:
+  bouncycastle-1.86.tar.gz: 535b2a3cc4e2ee3d259ddacbab4e0795a62632aa
+removed_sources:
   bcprov-jdk15on-1.50.pom: e9fb1c57f8dfd27f2791d9748f6985f0b5012639
   bcprov-jdk15on-150.tar.gz: 5fc554a5c36234412e98fff3c6f14a8ead6afef6
